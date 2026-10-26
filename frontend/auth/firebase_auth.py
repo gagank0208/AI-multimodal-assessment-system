@@ -1,4 +1,3 @@
-
 import requests
 import streamlit as st
 from streamlit.errors import StreamlitSecretNotFoundError
@@ -6,13 +5,20 @@ from streamlit.errors import StreamlitSecretNotFoundError
 FIREBASE_URL = "https://identitytoolkit.googleapis.com/v1/accounts"
 
 
+class FirebaseAuthError(ValueError):
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def _get_api_key():
     try:
         api_key = st.secrets["firebase"]["api_key"]
     except (KeyError, StreamlitSecretNotFoundError) as exc:
-        raise ValueError(
+        raise FirebaseAuthError(
+            "CONFIGURATION_ERROR",
             "Firebase configuration is missing. Add "
-            "[firebase] api_key to .streamlit/secrets.toml."
+            "[firebase] api_key to .streamlit/secrets.toml.",
         ) from exc
 
     if (
@@ -20,57 +26,54 @@ def _get_api_key():
         or not api_key.strip()
         or api_key.strip() == "YOUR_FIREBASE_WEB_API_KEY"
     ):
-        raise ValueError(
+        raise FirebaseAuthError(
+            "CONFIGURATION_ERROR",
             "Firebase configuration is invalid. Set a valid "
-            "firebase.api_key in .streamlit/secrets.toml."
+            "firebase.api_key in .streamlit/secrets.toml.",
         )
 
     return api_key.strip()
 
 
-def _authenticate(endpoint, email, password, display_name=None):
-    url = f"{FIREBASE_URL}:{endpoint}"
-    params = {"key": _get_api_key()}
-
-    payload = {
-        "email": email.strip(),
-        "password": password,
-        "returnSecureToken": True,
-    }
-
-    if display_name:
-        payload["displayName"] = display_name.strip()
-
+def _firebase_request(endpoint, payload):
     try:
         response = requests.post(
-            url,
-            params=params,
+            f"{FIREBASE_URL}:{endpoint}",
+            params={"key": _get_api_key()},
             json=payload,
             timeout=15,
         )
     except requests.RequestException as exc:
-        raise ValueError(
-            "Cannot connect to Firebase. Check your internet."
+        raise FirebaseAuthError(
+            "NETWORK_ERROR",
+            "Cannot connect to Firebase. Check your internet connection.",
         ) from exc
 
     try:
         data = response.json()
     except ValueError as exc:
-        raise ValueError("Firebase returned an invalid response.") from exc
+        raise FirebaseAuthError(
+            "INVALID_RESPONSE",
+            "Firebase returned an invalid response.",
+        ) from exc
 
     if not isinstance(data, dict):
-        raise ValueError("Firebase returned an invalid response.")
+        raise FirebaseAuthError(
+            "INVALID_RESPONSE",
+            "Firebase returned an invalid response.",
+        )
 
     if not response.ok:
         error = data.get("error", {})
         error_code = error.get("message", "") if isinstance(error, dict) else ""
-
         messages = {
             "EMAIL_EXISTS": "This email is already registered.",
+            "EMAIL_NOT_FOUND": "No account found. Please create a new account.",
             "INVALID_EMAIL": "Enter a valid email address.",
-            "INVALID_LOGIN_CREDENTIALS": "Incorrect email or password.",
-            "EMAIL_NOT_FOUND": "No account found for this email.",
-            "INVALID_PASSWORD": "Incorrect email or password.",
+            "INVALID_LOGIN_CREDENTIALS":
+                "Invalid email/username or password. Please try again.",
+            "INVALID_PASSWORD":
+                "Invalid email/username or password. Please try again.",
             "USER_DISABLED": "This account has been disabled.",
             "WEAK_PASSWORD": "Choose a stronger password.",
             "TOO_MANY_ATTEMPTS_TRY_LATER":
@@ -95,14 +98,31 @@ def _authenticate(endpoint, email, password, display_name=None):
                 "Authentication failed. Please try again.",
             )
 
-        raise ValueError(message)
+        raise FirebaseAuthError(error_code or "AUTHENTICATION_ERROR", message)
 
+    return data
+
+
+def _authenticate(endpoint, email, password, display_name=None):
+    payload = {
+        "email": email.strip(),
+        "password": password,
+        "returnSecureToken": True,
+    }
+
+    if display_name:
+        payload["displayName"] = display_name.strip()
+
+    data = _firebase_request(endpoint, payload)
     required_fields = ("localId", "email", "idToken", "refreshToken")
     if any(
         not isinstance(data.get(field), str) or not data[field]
         for field in required_fields
     ):
-        raise ValueError("Firebase did not return complete account details.")
+        raise FirebaseAuthError(
+            "INVALID_RESPONSE",
+            "Firebase did not return complete account details.",
+        )
 
     return data
 
@@ -122,3 +142,29 @@ def login_user(email, password):
         email,
         password,
     )
+
+
+def get_user_profile(id_token, expected_uid):
+    data = _firebase_request("lookup", {"idToken": id_token})
+    users = data.get("users")
+
+    if not isinstance(users, list):
+        raise FirebaseAuthError(
+            "PROFILE_NOT_FOUND",
+            "Firebase did not return the signed-in user's profile.",
+        )
+
+    profile = next(
+        (
+            user for user in users
+            if isinstance(user, dict) and user.get("localId") == expected_uid
+        ),
+        None,
+    )
+    if profile is None:
+        raise FirebaseAuthError(
+            "PROFILE_MISMATCH",
+            "The signed-in user's profile could not be verified.",
+        )
+
+    return profile

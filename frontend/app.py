@@ -34,7 +34,7 @@ def get_interview_service():
 # Page Configuration
 # --------------------------------------------------
 st.set_page_config(
-    page_title="AI Interview Assessment Studio",
+    page_title="AI Multimodal Assessment System",
     page_icon="🎙️",
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -60,6 +60,18 @@ if "candidate_name" not in st.session_state:
 
 if "candidate_email" not in st.session_state:
     st.session_state.candidate_email = ""
+
+candidate_profile = st.session_state.get("candidate_profile", {})
+if (
+    isinstance(candidate_profile, dict)
+    and candidate_profile.get("uid") == st.session_state["auth_user"].get("uid")
+):
+    st.session_state.candidate_name = (
+        candidate_profile.get("name") or st.session_state.candidate_name
+    )
+    st.session_state.candidate_email = (
+        candidate_profile.get("email") or st.session_state.candidate_email
+    )
 
 if "active_role" not in st.session_state:
     st.session_state.active_role = "Software Engineer"

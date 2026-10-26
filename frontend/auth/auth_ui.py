@@ -1,10 +1,14 @@
-
-from pathlib import Path
 from html import escape
+from pathlib import Path
 
 import streamlit as st
 
-from auth.firebase_auth import login_user, register_user
+from auth.firebase_auth import (
+    FirebaseAuthError,
+    get_user_profile,
+    login_user,
+    register_user,
+)
 
 
 def load_auth_css():
@@ -17,148 +21,180 @@ def load_auth_css():
         )
 
 
-def render_auth():
-    load_auth_css()
+def _establish_session(result):
+    uid = result["localId"]
+    profile = get_user_profile(result["idToken"], uid)
+    same_user = st.session_state.get("candidate_profile_uid") == uid
+    name = profile.get("displayName") or (
+        st.session_state.get("candidate_name", "") if same_user else ""
+    )
+    email = profile.get("email") or result["email"]
 
+    st.session_state["auth_user"] = {
+        "uid": uid,
+        "email": email,
+        "name": name,
+    }
+    st.session_state["auth_id_token"] = result["idToken"]
+    st.session_state["auth_refresh_token"] = result["refreshToken"]
+    st.session_state["candidate_profile_uid"] = uid
+    st.session_state["candidate_profile"] = {
+        "uid": uid,
+        "name": name,
+        "email": email,
+    }
+    st.session_state["candidate_name"] = name
+    st.session_state["candidate_email"] = email
+    st.session_state.pop("auth_account_not_found", None)
+    st.session_state.pop("auth_registration_mode", None)
+    st.session_state.pop("auth_prefill_email", None)
+    st.rerun()
+
+
+def _render_login():
     st.markdown(
         """
-        <div class="auth-header">
-            <div class="auth-logo">🎙️</div>
-            <div class="auth-title">
-                AI Interview
-                <span class="auth-pink">Assessment Studio</span>
-            </div>
+        <div class="login-brand">
+            <span class="login-brand-mark">A</span>
+            <span>AI Multimodal Assessment System</span>
         </div>
-        <div class="auth-subtitle">
-            Multimodal Assessment · Computer Vision · Speech · Semantic NLP
+        <div class="login-intro">
+            <div class="login-eyebrow">WELCOME BACK</div>
+            <h1>Sign in to your account</h1>
+            <p>Enter your credentials to access the assessment studio.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    left, right = st.columns([1.05, 0.95], gap="large")
-
-    with left:
-        st.markdown('<div class="auth-card">', unsafe_allow_html=True)
-        st.markdown("### Candidate Access")
-
-        mode = st.radio(
-            "Choose an option",
-            ["Login", "Create account"],
-            horizontal=True,
-            label_visibility="collapsed",
-            key="auth_mode",
+    with st.form("firebase_login_form", clear_on_submit=True):
+        email = st.text_input(
+            "Email",
+            placeholder="you@example.com",
+            value=st.session_state.get("auth_prefill_email", ""),
+            key="auth_login_email",
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            placeholder="Enter your password",
+            key="auth_login_password",
+        )
+        submitted = st.form_submit_button(
+            "Sign In",
+            type="primary",
+            use_container_width=True,
+        )
+        signup_submitted = st.form_submit_button(
+            "Sign up",
+            type="secondary",
+            use_container_width=True,
         )
 
-        with st.form("firebase_auth_form", clear_on_submit=True):
-            name = ""
+    st.caption("Don't have an account?")
+    if signup_submitted:
+        st.session_state["auth_prefill_email"] = email.strip()
+        st.session_state["auth_registration_mode"] = True
+        st.rerun()
 
-            if mode == "Create account":
-                name = st.text_input(
-                    "Full name",
-                    placeholder="Enter your full name",
-                )
+    if submitted:
+        email = email.strip()
+        if not email or not password:
+            st.error("Please enter your email and password.")
+            return
 
-            email = st.text_input(
-                "Email address",
-                placeholder="you@example.com",
-            )
-
-            password = st.text_input(
-                "Password",
-                type="password",
-                placeholder="Enter your password",
-            )
-
-            if mode == "Create account":
-                confirm_password = st.text_input(
-                    "Confirm password",
-                    type="password",
-                    placeholder="Re-enter your password",
-                )
+        try:
+            with st.spinner("Signing in..."):
+                result = login_user(email, password)
+        except FirebaseAuthError as exc:
+            st.session_state["auth_prefill_email"] = email
+            if exc.code == "EMAIL_NOT_FOUND":
+                st.session_state["auth_account_not_found_email"] = email
             else:
-                confirm_password = ""
+                st.session_state.pop("auth_account_not_found_email", None)
+                st.error(str(exc))
+        else:
+            try:
+                _establish_session(result)
+            except FirebaseAuthError as exc:
+                st.error(str(exc))
 
-            submitted = st.form_submit_button(
-                "Create account" if mode == "Create account" else "Login",
-                type="primary",
-                use_container_width=True,
-            )
+    missing_email = st.session_state.get("auth_account_not_found_email", "")
+    if missing_email and email.casefold() == missing_email.casefold():
+        st.error("No account found. Please create a new account.")
+        if st.button("Create New Account", key="auth_create_account"):
+            st.session_state["auth_registration_mode"] = True
+            st.rerun()
 
-        st.markdown("</div>", unsafe_allow_html=True)
 
-        if submitted:
-            email = email.strip()
+def _render_registration():
+    st.markdown(
+        """
+        <div class="auth-card">
+            <h1 class="auth-title">Create New Account</h1>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-            if not email or not password:
-                st.error("Please enter your email and password.")
-
-            elif mode == "Create account" and not name.strip():
-                st.error("Please enter your full name.")
-
-            elif mode == "Create account" and password != confirm_password:
-                st.error("Your passwords do not match.")
-
-            elif mode == "Create account" and len(password) < 6:
-                st.error("Password must contain at least 6 characters.")
-
-            else:
-                try:
-                    with st.spinner("Authenticating with Firebase..."):
-                        if mode == "Create account":
-                            result = register_user(
-                                name,
-                                email,
-                                password,
-                            )
-                        else:
-                            result = login_user(email, password)
-
-                    st.session_state["auth_user"] = {
-                        "uid": result["localId"],
-                        "email": result["email"],
-                        "name": result.get("displayName", name),
-                    }
-
-                    st.session_state["auth_id_token"] = result["idToken"]
-                    st.session_state["auth_refresh_token"] = (
-                        result["refreshToken"]
-                    )
-
-                    st.rerun()
-
-                except ValueError as exc:
-                    st.error(str(exc))
-
-    with right:
-        st.markdown(
-            """
-            <div class="auth-info">
-                <h2>📋 Interview Protocol &amp; Guidelines</h2>
-
-                <div class="feature">
-                    <div class="feature-title">👁️ Computer Vision Analysis</div>
-                    Tracks facial expressions, gaze alignment and head movement.
-                </div>
-
-                <div class="feature">
-                    <div class="feature-title">🎙️ Speech Analysis</div>
-                    Evaluates speaking pace, hesitation and filler words.
-                </div>
-
-                <div class="feature">
-                    <div class="feature-title">🧠 Semantic NLP</div>
-                    Evaluates answers against relevant interview concepts.
-                </div>
-
-                <div class="feature">
-                    <div class="feature-title">🔒 Secure Candidate Access</div>
-                    Sign in to access your interview assessment workspace.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    with st.form("firebase_registration_form", clear_on_submit=True):
+        name = st.text_input(
+            "Full name",
+            placeholder="Enter your full name",
+            key="auth_registration_name",
         )
+        email = st.text_input(
+            "Email",
+            value=st.session_state.get("auth_prefill_email", ""),
+            placeholder="you@example.com",
+            key="auth_registration_email",
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            placeholder="At least 6 characters",
+            key="auth_registration_password",
+        )
+        confirm_password = st.text_input(
+            "Confirm password",
+            type="password",
+            placeholder="Re-enter your password",
+            key="auth_registration_confirm_password",
+        )
+        submitted = st.form_submit_button(
+            "Create New Account",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if submitted:
+        email = email.strip()
+        if not name.strip() or not email or not password:
+            st.error("Please complete all fields.")
+        elif password != confirm_password:
+            st.error("Your passwords do not match.")
+        elif len(password) < 6:
+            st.error("Password must contain at least 6 characters.")
+        else:
+            try:
+                with st.spinner("Creating your account..."):
+                    result = register_user(name, email, password)
+                    _establish_session(result)
+            except FirebaseAuthError as exc:
+                st.error(str(exc))
+
+    if st.button("Back to Sign In", key="auth_back_to_login"):
+        st.session_state.pop("auth_registration_mode", None)
+        st.rerun()
+
+
+def render_auth():
+    load_auth_css()
+    with st.container(key="auth-screen"):
+        if st.session_state.get("auth_registration_mode"):
+            _render_registration()
+        else:
+            _render_login()
 
 
 def render_authenticated_controls():
@@ -176,7 +212,17 @@ def render_authenticated_controls():
                 "auth_user",
                 "auth_id_token",
                 "auth_refresh_token",
-                "auth_mode",
+                "auth_account_not_found_email",
+                "auth_registration_mode",
+                "auth_prefill_email",
+                "auth_login_email",
+                "auth_login_password",
+                "auth_registration_name",
+                "auth_registration_email",
+                "auth_registration_password",
+                "auth_registration_confirm_password",
+                "candidate_profile_uid",
+                "candidate_profile",
                 "current_page",
                 "candidate_name",
                 "candidate_email",
