@@ -8,6 +8,7 @@ from pathlib import Path
 # --------------------------------------------------
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT))
+from auth.auth_ui import render_auth, render_authenticated_controls
 
 # Keep the AI model loading behind the actual interview action so the
 # Streamlit UI can render without importing the full backend stack on startup.
@@ -38,6 +39,15 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed"
 )
+
+if (
+    not isinstance(st.session_state.get("auth_user"), dict)
+    or not st.session_state.get("auth_id_token")
+):
+    render_auth()
+    st.stop()
+
+render_authenticated_controls()
 
 # --------------------------------------------------
 # Session State Initialization

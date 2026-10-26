@@ -22,6 +22,7 @@ sentence-transformers
 
 # Web Application
 streamlit
+requests
 
 # Downgrade if u have updated one
 setuptools<=80.10.2
