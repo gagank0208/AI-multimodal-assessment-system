@@ -3,12 +3,20 @@ from pathlib import Path
 
 import streamlit as st
 
-from auth.firebase_auth import (
-    FirebaseAuthError,
-    get_user_profile,
-    login_user,
-    register_user,
-)
+try:
+    from .firebase_auth import (
+        FirebaseAuthError,
+        get_user_profile,
+        login_user,
+        register_user,
+    )
+except ImportError:
+    from auth.firebase_auth import (
+        FirebaseAuthError,
+        get_user_profile,
+        login_user,
+        register_user,
+    )
 
 
 def load_auth_css():
